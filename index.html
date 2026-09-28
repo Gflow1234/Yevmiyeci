@@ -1,0 +1,1440 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Yevmiye Defteri</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-storage-compat.js"></script>
+  <style>
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body { margin: 0; padding: 0; }
+    
+    @media print {
+      body * { visibility: hidden; }
+      #printable-area, #printable-area * { visibility: visible; }
+      #printable-area { position: absolute; left: 0; top: 0; width: 100%; color: #000 !important; background: #fff !important; }
+      .no-print { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    // Firebase yapılandırması: Firebase Console > Project settings > Your apps > Web app
+    // Buradaki değerleri kendi Firebase projenizin web uygulaması bilgileriyle doldurun.
+    const FIREBASE_CONFIG = {
+      apiKey: "BURAYA_API_KEY",
+      authDomain: "BURAYA_AUTH_DOMAIN",
+      projectId: "BURAYA_PROJECT_ID",
+      storageBucket: "BURAYA_STORAGE_BUCKET",
+      messagingSenderId: "BURAYA_MESSAGING_SENDER_ID",
+      appId: "BURAYA_APP_ID"
+    };
+
+    const FIREBASE_READY = Object.values(FIREBASE_CONFIG).every(v => v && !String(v).startsWith("BURAYA_"));
+    let firebaseApp = null, firebaseAuth = null, firebaseDb = null, firebaseStorage = null;
+    if (FIREBASE_READY) {
+      firebaseApp = firebase.initializeApp(FIREBASE_CONFIG);
+      firebaseAuth = firebase.auth();
+      firebaseDb = firebase.firestore();
+      firebaseStorage = firebase.storage();
+    }
+
+    // --- Lucide Icon Entegrasyonu ---
+    const Icon = ({ name, size = 20, color = "currentColor", strokeWidth = 2, style = {} }) => {
+      const ref = useRef(null);
+      useEffect(() => {
+        if (ref.current && window.lucide) {
+          ref.current.innerHTML = `<i data-lucide="${name}"></i>`;
+          window.lucide.createIcons({
+            attrs: { width: size, height: size, stroke: color, "stroke-width": strokeWidth }
+          });
+        }
+      }, [name, size, color, strokeWidth]);
+      return <span ref={ref} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", ...style }} />;
+    };
+
+    /* ---------------- Theme tokens ---------------- */
+    const DARK = {
+      mode: "dark", bg: "#14171d", surface: "#1b1f27", surface2: "#232833", surface3: "#282e3a",
+      border: "#2d323d", text: "#f0f1f4", dim: "#9096a3", dim2: "#656c7a", accent: "#caa356",
+      accentText: "#1a1408", ot: "#dd8e5e", holiday: "#a893d6", normal: "#54b696", danger: "#e0707a",
+      shadow: "0 2px 10px rgba(0,0,0,0.28)",
+    };
+    const LIGHT = {
+      mode: "light", bg: "#eef0ee", surface: "#ffffff", surface2: "#f4f5f3", surface3: "#e8eae7",
+      border: "#dcdfdc", text: "#1d2024", dim: "#6a7078", dim2: "#9ba1a8", accent: "#9c7a2e",
+      accentText: "#ffffff", ot: "#b6663a", holiday: "#6f58a8", normal: "#2c8c6c", danger: "#c1454f",
+      shadow: "0 2px 10px rgba(30,30,25,0.08)",
+    };
+
+    const WEEKDAYS = ["Pzt", "Sal", "Çrş", "Prş", "Cum", "Cmt", "Paz"];
+    const MONTHS = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
+
+    /* ---------------- Helpers ---------------- */
+    const pad2 = (n) => String(n).padStart(2, "0");
+    const dateKey = (y, m, d) => `${y}-${pad2(m + 1)}-${pad2(d)}`;
+    const monthKey = (y, m) => `${y}-${pad2(m + 1)}`;
+    const todayKey = () => { const t = new Date(); return dateKey(t.getFullYear(), t.getMonth(), t.getDate()); };
+
+    function rangeHours(start, end) {
+      if (!start || !end) return 0;
+      const [sh, sm] = start.split(":").map(Number);
+      const [eh, em] = end.split(":").map(Number);
+      let s = sh * 60 + sm, e = eh * 60 + em;
+      if (e <= s) e += 24 * 60;
+      return (e - s) / 60;
+    }
+
+    function totalHoursOf(ranges) {
+      return (ranges || []).reduce((sum, r) => sum + rangeHours(r.start, r.end), 0);
+    }
+
+    function getProjectSettings(pName, settings) {
+      const p = settings.projectSettings?.[pName] || {};
+      return {
+        dailyWage: p.dailyWage ?? settings.dailyWage ?? 1000,
+        standardStart: p.standardStart ?? settings.standardStart ?? "08:00",
+        standardEnd: p.standardEnd ?? settings.standardEnd ?? "17:00",
+        dailyBreakHours: p.dailyBreakHours ?? settings.dailyBreakHours ?? 1,
+        otMultiplier: p.otMultiplier ?? settings.otMultiplier ?? 1.5,
+        saturdayMultiplier: p.saturdayMultiplier ?? settings.saturdayMultiplier ?? 1.5,
+        holidayMultiplier: p.holidayMultiplier ?? settings.holidayMultiplier ?? 2,
+        transportGo: p.transportGo ?? 0,
+        transportReturn: p.transportReturn ?? 0,
+      };
+    }
+
+    function payOf(rawHours, holiday, projSettings, transportPay = 0, dateKeyString = null) {
+      const windowHours = rangeHours(projSettings.standardStart, projSettings.standardEnd);
+      const standardNet = Math.max(windowHours - projSettings.dailyBreakHours, 0.01);
+      const netHours = rawHours > 0 ? Math.max(0, rawHours - projSettings.dailyBreakHours) : 0;
+      const hourlyRate = projSettings.dailyWage / standardNet;
+      const normalHours = Math.min(netHours, standardNet);
+      const otHours = Math.max(0, netHours - standardNet);
+      
+      let isSaturday = false;
+      if (dateKeyString) {
+        const [y, m, d] = dateKeyString.split("-").map(Number);
+        const dayOfWeek = new Date(y, m - 1, d).getDay();
+        isSaturday = (dayOfWeek === 6);
+      }
+
+      let basePay = 0;
+      if (isSaturday && !holiday) {
+        const satMult = projSettings.saturdayMultiplier;
+        basePay = netHours * hourlyRate * satMult;
+      } else {
+        basePay = normalHours * hourlyRate + otHours * hourlyRate * projSettings.otMultiplier;
+      }
+
+      let wagePay = basePay;
+      if (holiday) {
+        if (isSaturday) {
+          const effectiveMult = Math.max(projSettings.holidayMultiplier, projSettings.saturdayMultiplier);
+          wagePay = netHours * hourlyRate * effectiveMult;
+        } else {
+          wagePay = basePay * projSettings.holidayMultiplier;
+        }
+      }
+
+      const finalPay = wagePay + (rawHours > 0 ? transportPay : 0);
+      return { hourlyRate, standardNet, netHours, normalHours, otHours, basePay: wagePay, finalPay, transportPay, isSaturday };
+    }
+
+    const fmtMoney = (n) => (isFinite(n) ? n : 0).toLocaleString("tr-TR", { maximumFractionDigits: 0 }) + " ₺";
+    const fmtHours = (n) => (isFinite(n) ? n : 0).toLocaleString("tr-TR", { maximumFractionDigits: 1 }) + " sa";
+    const initialsOf = (f, l) => `${(f || "").trim()[0] || ""}${(l || "").trim()[0] || ""}`.toUpperCase() || "?";
+
+    const DEFAULT_PROJECT_ITEM = {
+      dailyWage: 1000,
+      standardStart: "08:00",
+      standardEnd: "17:00",
+      dailyBreakHours: 1,
+      otMultiplier: 1.5,
+      saturdayMultiplier: 1.5,
+      holidayMultiplier: 2,
+      transportGo: 0,
+      transportReturn: 0
+    };
+
+    const DEFAULT_SETTINGS = { 
+      activeProject: "Genel Proje",
+      projects: ["Genel Proje", "Saha Çalışması", "Atölye"],
+      projectSettings: {
+        "Genel Proje": { ...DEFAULT_PROJECT_ITEM, dailyWage: 1000 },
+        "Saha Çalışması": { ...DEFAULT_PROJECT_ITEM, dailyWage: 1200, transportGo: 50, transportReturn: 50 },
+        "Atölye": { ...DEFAULT_PROJECT_ITEM, dailyWage: 900 }
+      }
+    };
+    const DEFAULT_PROFILE = { firstName: "", lastName: "" };
+
+    /* ---------------- Cloud Storage ---------------- */
+    const userRoot = (uid) => firebaseDb.collection("users").doc(uid);
+
+    async function loadCloudData(user) {
+      if (!firebaseDb || !user) return { settings: DEFAULT_SETTINGS, entries: {}, monthPhotos: {}, profile: DEFAULT_PROFILE, theme: "dark" };
+      const root = userRoot(user.uid);
+      const metaSnap = await root.collection("meta").doc("app").get();
+      const meta = metaSnap.exists ? metaSnap.data() : {};
+      const entriesSnap = await root.collection("entries").get();
+      const entries = {};
+      entriesSnap.forEach(doc => { entries[doc.id] = doc.data(); });
+      const photosSnap = await root.collection("monthPhotos").get();
+      const monthPhotos = {};
+      photosSnap.forEach(doc => { monthPhotos[doc.id] = Array.isArray(doc.data().photos) ? doc.data().photos : []; });
+      return {
+        settings: { ...DEFAULT_SETTINGS, ...(meta.settings || {}), projectSettings: { ...DEFAULT_SETTINGS.projectSettings, ...((meta.settings || {}).projectSettings || {}) } },
+        entries, monthPhotos,
+        profile: { ...DEFAULT_PROFILE, ...(meta.profile || {}) },
+        theme: meta.theme || "dark"
+      };
+    }
+
+    async function saveMeta(user, patch) {
+      if (!user || !firebaseDb) return;
+      await userRoot(user.uid).collection("meta").doc("app").set(patch, { merge: true });
+    }
+
+    async function saveEntryCloud(user, key, entry) {
+      if (!user || !firebaseDb) return;
+      const ref = userRoot(user.uid).collection("entries").doc(key);
+      if (!entry || !entry.worked) return ref.delete();
+      return ref.set(entry, { merge: true });
+    }
+
+    async function uploadDataUrl(user, dataUrl, path) {
+      if (!firebaseStorage || !user || !dataUrl || !String(dataUrl).startsWith("data:")) return dataUrl;
+      const ref = firebaseStorage.ref().child(`users/${user.uid}/${path}`);
+      await ref.putString(dataUrl, "data_url");
+      return await ref.getDownloadURL();
+    }
+
+    async function deleteStoragePath(path) {
+      if (!firebaseStorage || !path) return;
+      try { await firebaseStorage.ref(path).delete(); } catch (e) {}
+    }
+
+    async function saveMonthPhotosCloud(user, monthKeyValue, photos) {
+      if (!user || !firebaseDb) return;
+      await userRoot(user.uid).collection("monthPhotos").doc(monthKeyValue).set({ photos }, { merge: true });
+    }
+
+    /* ---------------- App ---------------- */
+    function App() {
+      const [user, setUser] = useState(null);
+      const [isAuthenticated, setIsAuthenticated] = useState(false);
+      const [loading, setLoading] = useState(true);
+      const [tab, setTab] = useState("home");
+      const [cursor, setCursor] = useState(() => { const t = new Date(); return { y: t.getFullYear(), m: t.getMonth() }; });
+      const [entries, setEntries] = useState({});
+      const [monthPhotos, setMonthPhotos] = useState({});
+      const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+      const [profile, setProfile] = useState(DEFAULT_PROFILE);
+      const [themeMode, setThemeMode] = useState("dark");
+      const [selectedKey, setSelectedKey] = useState(null);
+      const [profileOpen, setProfileOpen] = useState(false);
+
+      const [isDirty, setIsDirty] = useState(false);
+      const [pendingTab, setPendingTab] = useState(null);
+      const [showGuardModal, setShowGuardModal] = useState(false);
+      const settingsRef = useRef(null);
+
+      const T = themeMode === "light" ? LIGHT : DARK;
+
+      useEffect(() => {
+        if (!FIREBASE_READY) { setLoading(false); return; }
+        const unsubscribe = firebaseAuth.onAuthStateChanged(async (nextUser) => {
+          setUser(nextUser);
+          setIsAuthenticated(!!nextUser);
+          if (!nextUser) {
+            setEntries({}); setMonthPhotos({}); setSettings(DEFAULT_SETTINGS); setProfile(DEFAULT_PROFILE);
+            setThemeMode("dark"); setLoading(false); return;
+          }
+          try {
+            const d = await loadCloudData(nextUser);
+            setSettings(d.settings); setEntries(d.entries); setMonthPhotos(d.monthPhotos || {});
+            setProfile(d.profile); setThemeMode(d.theme);
+          } catch (err) {
+            console.error(err);
+            alert("Bulut verileri yüklenemedi. Firebase ayarlarınızı ve güvenlik kurallarını kontrol edin.");
+          } finally { setLoading(false); }
+        });
+        return unsubscribe;
+      }, []);
+
+      const toggleTheme = async () => {
+        const next = themeMode === "light" ? "dark" : "light";
+        setThemeMode(next);
+        await saveMeta(user, { theme: next });
+      };
+
+      const currentMonthKey = monthKey(cursor.y, cursor.m);
+      const monthLabel = `${MONTHS[cursor.m]} ${cursor.y}`;
+      const changeMonth = (delta) => {
+        setCursor((c) => {
+          let m = c.m + delta, y = c.y;
+          if (m < 0) { m = 11; y -= 1; }
+          if (m > 11) { m = 0; y += 1; }
+          return { y, m };
+        });
+      };
+
+      const handleTabChange = (nextTab) => {
+        if (tab === "settings" && isDirty) {
+          setPendingTab(nextTab);
+          setShowGuardModal(true);
+        } else {
+          setTab(nextTab);
+        }
+      };
+
+      const handleAddMonthPhotos = async (mKey, newPhotos) => {
+        try {
+          const uploaded = await Promise.all(newPhotos.map((photo, i) => uploadDataUrl(user, photo, `monthPhotos/${mKey}/${Date.now()}_${i}.jpg`)));
+          const next = { ...monthPhotos, [mKey]: [...(monthPhotos[mKey] || []), ...uploaded] };
+          setMonthPhotos(next);
+          await saveMonthPhotosCloud(user, mKey, next[mKey]);
+        } catch (err) { console.error(err); alert("Fotoğraflar Google hesabına yüklenemedi."); }
+      };
+
+      const handleRemoveMonthPhoto = async (mKey, index) => {
+        const existing = monthPhotos[mKey] || [];
+        const removed = existing[index];
+        const updated = existing.filter((_, i) => i !== index);
+        const next = { ...monthPhotos };
+        if (updated.length > 0) next[mKey] = updated; else delete next[mKey];
+        setMonthPhotos(next);
+        await saveMonthPhotosCloud(user, mKey, updated);
+        if (removed && removed.storagePath) await deleteStoragePath(removed.storagePath);
+      };
+
+      const grid = useMemo(() => {
+        const { y, m } = cursor;
+        const firstDay = new Date(y, m, 1);
+        let startOffset = firstDay.getDay() - 1;
+        if (startOffset < 0) startOffset = 6;
+        const daysInMonth = new Date(y, m + 1, 0).getDate();
+        const cells = [];
+        for (let i = 0; i < startOffset; i++) cells.push(null);
+        for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+        while (cells.length % 7 !== 0) cells.push(null);
+        return cells;
+      }, [cursor]);
+
+      const monthEntries = useMemo(() => {
+        const prefix = `${cursor.y}-${pad2(cursor.m + 1)}-`;
+        return Object.entries(entries)
+          .filter(([k, v]) => k.startsWith(prefix) && v.worked)
+          .sort(([a], [b]) => (a < b ? -1 : 1));
+      }, [entries, cursor]);
+
+      const monthSummary = useMemo(() => {
+        let days = 0, normal = 0, ot = 0, pay = 0, transport = 0;
+        const projectMap = {};
+
+        for (const [k, v] of monthEntries) {
+          const projName = v.project || settings.activeProject || "Genel Proje";
+          const pSet = getProjectSettings(projName, settings);
+          const th = totalHoursOf(v.ranges);
+          
+          let tPay = 0;
+          if (v.includeTransportGo) tPay += v.transportGoVal ?? pSet.transportGo;
+          if (v.includeTransportReturn) tPay += v.transportReturnVal ?? pSet.transportReturn;
+
+          const p = payOf(th, v.holiday, pSet, tPay, k);
+          days += 1; normal += p.normalHours; ot += p.otHours; pay += p.finalPay; transport += tPay;
+
+          if (!projectMap[projName]) {
+            projectMap[projName] = { days: 0, pay: 0, hours: 0 };
+          }
+          projectMap[projName].days += 1;
+          projectMap[projName].pay += p.finalPay;
+          projectMap[projName].hours += p.netHours;
+        }
+        return { days, normal, ot, pay, transport, projectMap };
+      }, [monthEntries, settings]);
+
+      const persistEntries = async (next) => {
+        const previous = entries;
+        setEntries(next);
+        try {
+          for (const [key, entry] of Object.entries(next)) {
+            if (JSON.stringify(previous[key]) === JSON.stringify(entry)) continue;
+            const prepared = { ...entry };
+            if (Array.isArray(prepared.photos)) {
+              prepared.photos = await Promise.all(prepared.photos.map(async (photo, i) => {
+                if (typeof photo === "string" && photo.startsWith("data:")) {
+                  return await uploadDataUrl(user, photo, `entries/${key}/${Date.now()}_${i}.jpg`);
+                }
+                return photo;
+              }));
+            }
+            await saveEntryCloud(user, key, prepared);
+            if (next[key] !== prepared) setEntries(prev => ({ ...prev, [key]: prepared }));
+          }
+          for (const key of Object.keys(previous)) {
+            if (!(key in next)) await saveEntryCloud(user, key, null);
+          }
+        } catch (err) { console.error(err); alert("Kayıt Google hesabına kaydedilemedi."); }
+      };
+
+      if (loading) {
+        return (
+          <div style={{ background: DARK.bg, color: DARK.dim, height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui" }}>
+            Yükleniyor…
+          </div>
+        );
+      }
+
+      if (!isAuthenticated) {
+        return <AuthScreen T={T} onSuccess={() => {}} />;
+      }
+
+      return (
+        <div style={{ background: T.bg, color: T.text, height: "100vh", display: "flex", flexDirection: "column", fontFamily: "-apple-system, system-ui, sans-serif", transition: "background .2s ease, color .2s ease" }}>
+          <style>{`
+            * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+            .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+            .scrollarea::-webkit-scrollbar { display: none; }
+            input[type="time"], input[type="number"], input[type="text"], input[type="password"], select {
+              background: ${T.surface3}; color: ${T.text}; border: 1px solid ${T.border};
+              border-radius: 10px; padding: 9px 11px; font-size: 15px; font-family: inherit; outline: none;
+            }
+            input:focus, select:focus { border-color: ${T.accent}; }
+            input[type="time"]::-webkit-calendar-picker-indicator { filter: ${T.mode === "dark" ? "invert(0.75)" : "none"}; }
+            .tabbtn { transition: color .15s ease; }
+            .sheet { animation: slideUp .22s ease; }
+            @keyframes slideUp { from { transform: translateY(16px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+            button { font-family: inherit; }
+          `}</style>
+
+          <div className="scrollarea" style={{ flex: 1, overflowY: "auto", paddingBottom: 12 }}>
+            {tab === "home" && (
+              <HomeTab
+                T={T} themeMode={themeMode} toggleTheme={toggleTheme}
+                profile={profile} monthLabel={monthLabel} monthSummary={monthSummary}
+                onEditProfile={() => setProfileOpen(true)}
+                onGoCalendar={() => handleTabChange("calendar")}
+                onGoSummary={() => handleTabChange("summary")}
+                onOpenToday={() => setSelectedKey(todayKey())}
+                todayEntry={entries[todayKey()]}
+                onLock={() => firebaseAuth && firebaseAuth.signOut()}
+              />
+            )}
+            {tab === "calendar" && (
+              <CalendarTab T={T} cursor={cursor} monthLabel={monthLabel} changeMonth={changeMonth} grid={grid} entries={entries} settings={settings} onSelect={setSelectedKey} />
+            )}
+            {tab === "summary" && (
+              <SummaryTab 
+                T={T} 
+                monthLabel={monthLabel} 
+                changeMonth={changeMonth} 
+                monthEntries={monthEntries} 
+                monthSummary={monthSummary} 
+                settings={settings} 
+                onSelect={setSelectedKey} 
+                profile={profile}
+                currentMonthKey={currentMonthKey}
+                photos={monthPhotos[currentMonthKey] || []}
+                onAddPhotos={(data) => handleAddMonthPhotos(currentMonthKey, data)}
+                onRemovePhoto={(idx) => handleRemoveMonthPhoto(currentMonthKey, idx)}
+              />
+            )}
+            {tab === "settings" && (
+              <SettingsTab
+                ref={settingsRef}
+                T={T}
+                settings={settings}
+                onSaveSettings={async (s) => { setSettings(s); await saveMeta(user, { settings: s }); setIsDirty(false); }}
+                setIsDirty={setIsDirty}
+                isDirty={isDirty}
+                themeMode={themeMode}
+                setThemeMode={async (m) => { setThemeMode(m); await saveMeta(user, { theme: m }); }}
+              />
+            )}
+          </div>
+
+          <TabBar T={T} tab={tab} setTab={handleTabChange} />
+
+          {showGuardModal && (
+            <GuardModal
+              T={T}
+              onSave={() => {
+                if (settingsRef.current) settingsRef.current.doSave();
+                setShowGuardModal(false);
+                setTab(pendingTab);
+                setPendingTab(null);
+              }}
+              onDiscard={() => {
+                setIsDirty(false);
+                setShowGuardModal(false);
+                setTab(pendingTab);
+                setPendingTab(null);
+              }}
+              onCancel={() => {
+                setShowGuardModal(false);
+                setPendingTab(null);
+              }}
+            />
+          )}
+
+          {selectedKey && (
+            <DaySheet
+              T={T} dateKey={selectedKey} entry={entries[selectedKey]} settings={settings}
+              onClose={() => setSelectedKey(null)}
+              onSave={(entry) => {
+                const next = { ...entries };
+                if (!entry || !entry.worked) delete next[selectedKey]; else next[selectedKey] = entry;
+                persistEntries(next);
+                setSelectedKey(null);
+              }}
+            />
+          )}
+
+          {profileOpen && (
+            <ProfileSheet T={T} profile={profile} onClose={() => setProfileOpen(false)}
+              onSave={async (p) => { setProfile(p); await saveMeta(user, { profile: p }); setProfileOpen(false); }} />
+          )}
+        </div>
+      );
+    }
+
+    /* ---------------- Google Giriş Ekranı ---------------- */
+    function AuthScreen({ T }) {
+      const [error, setError] = useState("");
+      const [busy, setBusy] = useState(false);
+
+      const handleGoogleLogin = async () => {
+        if (!FIREBASE_READY) return;
+        setBusy(true); setError("");
+        try {
+          const provider = new firebase.auth.GoogleAuthProvider();
+          provider.setCustomParameters({ prompt: "select_account" });
+          await firebaseAuth.signInWithPopup(provider);
+        } catch (err) {
+          console.error(err);
+          setError(err?.message || "Google ile giriş yapılamadı.");
+        } finally { setBusy(false); }
+      };
+
+      return (
+        <div style={{ background: T.bg, color: T.text, height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "-apple-system, system-ui, sans-serif" }}>
+          <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 24, padding: "32px 24px", width: "100%", maxWidth: 380, textAlign: "center", boxShadow: T.shadow }}>
+            <div style={{ width: 60, height: 60, borderRadius: "50%", background: T.surface2, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", color: T.accent }}>
+              <Icon name="cloud" size={28} color={T.accent} />
+            </div>
+            <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>Yevmiye Defteri</div>
+            <div style={{ fontSize: 13, color: T.dim, marginBottom: 24 }}>Verileriniz Google hesabınızla eşitlenir.</div>
+            {!FIREBASE_READY ? (
+              <div style={{ background: T.surface2, border: `1px solid ${T.danger}`, color: T.danger, borderRadius: 12, padding: 12, fontSize: 12, lineHeight: 1.5, textAlign: "left" }}>
+                Firebase yapılandırması henüz eklenmedi. Dosyanın başındaki <b>FIREBASE_CONFIG</b> alanını Firebase Console bilgilerinizle doldurun.
+              </div>
+            ) : (
+              <button onClick={handleGoogleLogin} disabled={busy} style={{ width: "100%", background: T.accent, color: T.accentText, border: "none", borderRadius: 14, padding: "14px 0", fontSize: 15, fontWeight: 700, cursor: busy ? "default" : "pointer", opacity: busy ? .7 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
+                <Icon name="log-in" size={18} color={T.accentText} /> {busy ? "Google'a bağlanılıyor…" : "Google ile Giriş Yap"}
+              </button>
+            )}
+            {error && <div style={{ marginTop: 14, fontSize: 12, color: T.danger, lineHeight: 1.5 }}>{error}</div>}
+          </div>
+        </div>
+      );
+    }
+
+    /* ---------------- Guard Modal ---------------- */
+    function GuardModal({ T, onSave, onDiscard, onCancel }) {
+      return (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 99, padding: 20 }}>
+          <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 18, padding: 20, width: "100%", maxWidth: 340, boxShadow: T.shadow }}>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Ayarlarınız Kaydedilmedi!</div>
+            <div style={{ fontSize: 13, color: T.dim, marginBottom: 18 }}>Yaptığınız değişiklikler henüz kaydedilmedi. Nasıl devam etmek istersiniz?</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <button onClick={onSave} style={{ background: T.accent, color: T.accentText, border: "none", borderRadius: 10, padding: "11px 0", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
+                Kaydet ve Geç
+              </button>
+              <button onClick={onDiscard} style={{ background: T.surface2, color: T.danger, border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 0", fontSize: 13.5, fontWeight: 600, cursor: "pointer" }}>
+                Vazgeç (Kaydetme)
+              </button>
+              <button onClick={onCancel} style={{ background: "transparent", color: T.dim, border: "none", padding: "8px 0", fontSize: 13, cursor: "pointer" }}>
+                İptal (Düzenlemeye Devam Et)
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* ---------------- Tab bar ---------------- */
+    function TabBar({ T, tab, setTab }) {
+      const items = [
+        { id: "home", label: "Ana Sayfa", icon: "home" },
+        { id: "calendar", label: "Takvim", icon: "calendar" },
+        { id: "summary", label: "Özet", icon: "bar-chart-3" },
+        { id: "settings", label: "Ayarlar", icon: "settings" },
+      ];
+      return (
+        <div className="no-print" style={{ borderTop: `1px solid ${T.border}`, background: T.surface, display: "flex", paddingBottom: "env(safe-area-inset-bottom, 8px)" }}>
+          {items.map(({ id, label, icon }) => {
+            const active = tab === id;
+            return (
+              <button key={id} onClick={() => setTab(id)} className="tabbtn"
+                style={{ flex: 1, background: "none", border: "none", padding: "10px 0 6px", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, color: active ? T.accent : T.dim, cursor: "pointer" }}>
+                <Icon name={icon} size={21} strokeWidth={active ? 2.3 : 1.7} color={active ? T.accent : T.dim} />
+                <span style={{ fontSize: 10.5, fontWeight: active ? 600 : 400 }}>{label}</span>
+              </button>
+            );
+          })}
+        </div>
+      );
+    }
+
+    /* ---------------- Month nav ---------------- */
+    function MonthNav({ T, label, changeMonth }) {
+      return (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 16px 10px" }}>
+          <button onClick={() => changeMonth(-1)} className="no-print" style={navBtnStyle(T)}><Icon name="chevron-left" size={20} color={T.text} /></button>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>{label}</div>
+          <button onClick={() => changeMonth(1)} className="no-print" style={navBtnStyle(T)}><Icon name="chevron-right" size={20} color={T.text} /></button>
+        </div>
+      );
+    }
+    const navBtnStyle = (T) => ({ background: T.surface2, border: `1px solid ${T.border}`, borderRadius: 10, width: 34, height: 34, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" });
+
+    /* ---------------- Home tab ---------------- */
+    function HomeTab({ T, themeMode, toggleTheme, profile, monthLabel, monthSummary, onEditProfile, onGoCalendar, onGoSummary, onOpenToday, todayEntry, onLock }) {
+      const hasName = profile.firstName || profile.lastName;
+      const fullName = hasName ? `${profile.firstName} ${profile.lastName}`.trim() : "İsim eklenmedi";
+
+      return (
+        <div style={{ padding: "18px 16px 6px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 22 }}>
+            <div>
+              <div style={{ fontSize: 11, letterSpacing: 1.2, color: T.dim2, fontWeight: 700, textTransform: "uppercase" }}>Yevmiye Defteri</div>
+            </div>
+            <button onClick={toggleTheme} style={{ ...navBtnStyle(T), width: 36, height: 36 }} aria-label="Tema değiştir">
+              {themeMode === "light" ? <Icon name="moon" size={17} color={T.text} /> : <Icon name="sun" size={17} color={T.text} />}
+            </button>
+          </div>
+
+          <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 20, padding: "20px 18px", boxShadow: T.shadow, marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <div className="mono" style={{ width: 54, height: 54, borderRadius: "50%", background: T.accent, color: T.accentText, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 700, flexShrink: 0 }}>
+                {initialsOf(profile.firstName, profile.lastName)}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, color: T.dim }}>Merhaba,</div>
+                <div style={{ fontSize: 18, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{fullName}</div>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={onEditProfile} style={{ background: T.surface2, border: `1px solid ${T.border}`, borderRadius: 10, width: 34, height: 34, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+                  <Icon name="pencil" size={14} color={T.dim} />
+                </button>
+                <button onClick={onLock} title="Uygulamayı Kilitle" style={{ background: T.surface2, border: `1px solid ${T.border}`, borderRadius: 10, width: 34, height: 34, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+                  <Icon name="log-out" size={14} color={T.danger} />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <button onClick={onOpenToday} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: "14px 16px", marginBottom: 16, cursor: "pointer", boxShadow: T.shadow }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <Icon name="clock" size={16} color={T.accent} />
+              <span style={{ fontSize: 14, fontWeight: 600 }}>Bugün</span>
+            </div>
+            <span style={{ fontSize: 13, color: todayEntry?.worked ? T.normal : T.dim, fontWeight: 600 }}>
+              {todayEntry?.worked ? "Çalışıldı olarak işaretli" : "İşaretlemek için dokun"}
+            </span>
+          </button>
+
+          <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderTop: `2px solid ${T.accent}`, borderRadius: 18, padding: "16px 18px", boxShadow: T.shadow, marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+              <span style={{ fontSize: 11, letterSpacing: 1, color: T.dim2, fontWeight: 700, textTransform: "uppercase" }}>{monthLabel}</span>
+              <button onClick={onGoSummary} style={{ background: "none", border: "none", color: T.accent, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Detaylar →</button>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <div>
+                <div className="mono" style={{ fontSize: 22, fontWeight: 700 }}>{fmtMoney(monthSummary.pay)}</div>
+                <div style={{ fontSize: 12, color: T.dim, marginTop: 2 }}>{monthSummary.days} gün · {fmtHours(monthSummary.normal + monthSummary.ot)}</div>
+              </div>
+            </div>
+          </div>
+
+          <button onClick={onGoCalendar} style={{ width: "100%", background: T.accent, color: T.accentText, border: "none", borderRadius: 14, padding: "14px 0", fontSize: 15, fontWeight: 700, cursor: "pointer" }}>
+            Takvimi Aç
+          </button>
+        </div>
+      );
+    }
+
+    /* ---------------- Calendar tab ---------------- */
+    function CalendarTab({ T, cursor, monthLabel, changeMonth, grid, entries, settings, onSelect }) {
+      const tKey = todayKey();
+      return (
+        <div>
+          <MonthNav T={T} label={monthLabel} changeMonth={changeMonth} />
+          <div style={{ padding: "0 16px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", marginBottom: 6 }}>
+              {WEEKDAYS.map((w) => (
+                <div key={w} style={{ textAlign: "center", fontSize: 11, color: T.dim2, fontWeight: 600, padding: "4px 0" }}>{w}</div>
+              ))}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4 }}>
+              {grid.map((d, i) => {
+                if (!d) return <div key={i} />;
+                const k = dateKey(cursor.y, cursor.m, d);
+                const entry = entries[k];
+                const isToday = k === tKey;
+                let dot = null, netH = 0;
+                if (entry && entry.worked) {
+                  const projName = entry.project || settings.activeProject || "Genel Proje";
+                  const pSet = getProjectSettings(projName, settings);
+                  const raw = totalHoursOf(entry.ranges);
+                  const p = payOf(raw, entry.holiday, pSet, 0, k);
+                  netH = p.netHours;
+                  dot = entry.holiday ? T.holiday : (p.otHours > 0 || p.isSaturday) ? T.ot : T.normal;
+                }
+                const hasNote = entry?.worked && ((entry.note && entry.note.trim()) || (entry.photos && entry.photos.length > 0));
+                return (
+                  <button key={i} onClick={() => onSelect(k)}
+                    style={{ position: "relative", aspectRatio: "1", background: entry?.worked ? T.surface2 : "transparent",
+                      border: isToday ? `1.5px solid ${T.accent}` : `1px solid ${entry?.worked ? T.border : "transparent"}`,
+                      borderRadius: 12, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                      cursor: "pointer", padding: 2, gap: 2 }}>
+                    {hasNote && <span style={{ position: "absolute", top: 4, right: 4, width: 5, height: 5, borderRadius: 999, background: T.accent }} />}
+                    <span style={{ fontSize: 13, fontWeight: isToday ? 700 : 500, color: entry?.worked ? T.text : T.dim }}>{d}</span>
+                    {dot && <span className="mono" style={{ fontSize: 9, color: dot, fontWeight: 700 }}>{fmtHours(netH).replace(" sa", "s")}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <Legend T={T} />
+        </div>
+      );
+    }
+
+    function Legend({ T }) {
+      const items = [
+        { c: T.normal, t: "Normal mesai" },
+        { c: T.ot, t: "Çarpanlı / Fazla mesai" },
+        { c: T.holiday, t: "Resmi tatil / hafta tatili" },
+      ];
+      return (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 12, padding: "18px 20px 4px" }}>
+          {items.map((it) => (
+            <div key={it.t} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ width: 8, height: 8, borderRadius: 999, background: it.c }} />
+              <span style={{ fontSize: 11.5, color: T.dim }}>{it.t}</span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    /* ---------------- Summary tab ---------------- */
+    function SummaryTab({ T, monthLabel, changeMonth, monthEntries, monthSummary, settings, onSelect, profile, currentMonthKey, photos, onAddPhotos, onRemovePhoto }) {
+      const { days, normal, ot, pay, transport, projectMap } = monthSummary;
+      const fullName = `${profile.firstName || ''} ${profile.lastName || ''}`.trim();
+      const fileInputRef = useRef(null);
+      const [reportMode, setReportMode] = useState("summary"); // "summary" | "report"
+
+      const triggerPrint = (mode) => {
+        setReportMode(mode);
+        setTimeout(() => window.print(), 60);
+      };
+
+      const readFileAsDataURL = (file) => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      const handleImageUpload = async (e) => {
+        const files = Array.from(e.target.files || []);
+        if (files.length === 0) return;
+
+        const tooBig = files.find((f) => f.size > 5 * 1024 * 1024);
+        if (tooBig) {
+          alert("Lütfen her biri 5MB'dan küçük fotoğraflar seçiniz.");
+          return;
+        }
+
+        try {
+          const dataUrls = await Promise.all(files.map(readFileAsDataURL));
+          onAddPhotos(dataUrls);
+        } finally {
+          if (fileInputRef.current) fileInputRef.current.value = "";
+        }
+      };
+
+      const handleRemovePhoto = (idx) => {
+        if (confirm("Bu fotoğrafı silmek istediğinize emin misiniz?")) {
+          onRemovePhoto(idx);
+        }
+      };
+
+      return (
+        <div>
+          <MonthNav T={T} label={monthLabel} changeMonth={changeMonth} />
+          
+          <div style={{ padding: "0 16px", marginBottom: 12, display: "flex", flexDirection: "column", gap: 8 }} className="no-print">
+            <button onClick={() => triggerPrint("summary")} style={{ width: "100%", background: T.surface2, color: T.accent, border: `1px solid ${T.accent}`, borderRadius: 12, padding: "10px 0", fontSize: 14, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, cursor: "pointer" }}>
+              <Icon name="download" size={16} color={T.accent} /> Aylık Puantaj (PDF)
+            </button>
+            <button onClick={() => triggerPrint("report")} style={{ width: "100%", background: T.surface2, color: T.text, border: `1px solid ${T.border}`, borderRadius: 12, padding: "10px 0", fontSize: 14, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, cursor: "pointer" }}>
+              <Icon name="file-text" size={16} color={T.text} /> Çalışma Raporu (Notlar &amp; Fotoğraflar) (PDF)
+            </button>
+          </div>
+
+          <div id="printable-area">
+            <div style={{ display: "none" }} className="print-only">
+              <h2>{reportMode === "report" ? "Çalışma Raporu" : "Puantaj Raporu"} - {monthLabel}</h2>
+              {fullName && <p><strong>Personel:</strong> {fullName}</p>}
+            </div>
+
+            <div style={{ margin: "8px 16px 18px", background: T.surface, border: `1px solid ${T.border}`, borderTop: `2px solid ${T.accent}`, borderRadius: 18, padding: "18px 18px 6px", boxShadow: T.shadow }}>
+              <div style={{ fontSize: 11, letterSpacing: 1, color: T.dim2, fontWeight: 700, marginBottom: 12 }}>AY SONU PUANTAJI</div>
+              <ReceiptRow T={T} label="Çalışılan gün" value={`${days} gün`} />
+              <ReceiptRow T={T} label="Normal saat" value={fmtHours(normal)} />
+              <ReceiptRow T={T} label="Fazla mesai" value={fmtHours(ot)} color={ot > 0 ? T.ot : undefined} />
+              {transport > 0 && <ReceiptRow T={T} label="Toplam yol ücreti" value={fmtMoney(transport)} />}
+              <div style={{ borderTop: `1px dashed ${T.border}`, margin: "10px 0" }} />
+              <ReceiptRow T={T} label="TOPLAM KAZANÇ" value={fmtMoney(pay)} big />
+            </div>
+
+            {/* --- Ayın Fotoğrafları / Belgeleri Alanı --- */}
+            <div style={{ margin: "0 16px 18px" }}>
+              <div style={{ fontSize: 11, letterSpacing: 1, color: T.dim2, fontWeight: 700, marginBottom: 8, paddingLeft: 2 }}>
+                AYLIK FİŞ / BELGE / FOTOĞRAFLAR
+              </div>
+              <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: 14, boxShadow: T.shadow }}>
+                <input 
+                  type="file" 
+                  accept="image/*" 
+                  multiple
+                  ref={fileInputRef} 
+                  onChange={handleImageUpload} 
+                  style={{ display: "none" }} 
+                />
+
+                {photos && photos.length > 0 ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
+                      {photos.map((p, idx) => (
+                        <div key={idx} style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: `1px solid ${T.border}`, background: T.surface2 }}>
+                          <img src={p} alt={`${monthLabel} Fotoğraf ${idx + 1}`} style={{ width: "100%", height: 130, objectFit: "cover", display: "block" }} />
+                          <button
+                            onClick={() => handleRemovePhoto(idx)}
+                            className="no-print"
+                            style={{ position: "absolute", top: 6, right: 6, background: "rgba(0,0,0,0.55)", border: "none", borderRadius: 999, width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+                            <Icon name="trash-2" size={13} color="#fff" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <button 
+                      onClick={() => fileInputRef.current && fileInputRef.current.click()} 
+                      className="no-print"
+                      style={{ width: "100%", background: T.surface2, color: T.text, border: `1px solid ${T.border}`, borderRadius: 10, padding: "9px 0", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, cursor: "pointer" }}>
+                      <Icon name="plus" size={14} /> Fotoğraf Ekle
+                    </button>
+                  </div>
+                ) : (
+                  <button 
+                    onClick={() => fileInputRef.current && fileInputRef.current.click()} 
+                    className="no-print"
+                    style={{ width: "100%", background: T.surface2, color: T.dim, border: `1px dashed ${T.border}`, borderRadius: 12, padding: "20px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                    <Icon name="camera" size={24} color={T.accent} />
+                    <span style={{ fontSize: 13.5, fontWeight: 600, color: T.text }}>{monthLabel} İçin Fotoğraf/Fiş Yükle</span>
+                    <span style={{ fontSize: 11.5, color: T.dim2 }}>Birden fazla seçebilirsiniz: puantaj cetveli, imza şablonu veya fiş görselleri</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {Object.keys(projectMap).length > 0 && (
+              <div style={{ padding: "0 16px", marginBottom: 18 }}>
+                <div style={{ fontSize: 11, letterSpacing: 1, color: T.dim2, fontWeight: 700, marginBottom: 8, paddingLeft: 2 }}>PROJE BAZLI KAZANÇ</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {Object.entries(projectMap).map(([pName, data]) => (
+                    <div key={pName} style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div>
+                        <div style={{ fontSize: 14, fontWeight: 600 }}>{pName}</div>
+                        <div style={{ fontSize: 11.5, color: T.dim, marginTop: 2 }}>{data.days} gün · {fmtHours(data.hours)}</div>
+                      </div>
+                      <div className="mono" style={{ fontSize: 15, fontWeight: 700, color: T.accent }}>{fmtMoney(data.pay)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ padding: "0 16px" }}>
+              <div style={{ fontSize: 11, letterSpacing: 1, color: T.dim2, fontWeight: 700, marginBottom: 8, paddingLeft: 2 }}>GÜNLÜK DÖKÜM</div>
+              {monthEntries.length === 0 && <div style={{ color: T.dim, fontSize: 13.5, padding: "20px 4px" }}>Bu ay için henüz çalışma günü eklenmedi.</div>}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {monthEntries.map(([k, v]) => {
+                  const projName = v.project || settings.activeProject || "Genel Proje";
+                  const pSet = getProjectSettings(projName, settings);
+                  const raw = totalHoursOf(v.ranges);
+                  
+                  let tPay = 0;
+                  if (v.includeTransportGo) tPay += v.transportGoVal ?? pSet.transportGo;
+                  if (v.includeTransportReturn) tPay += v.transportReturnVal ?? pSet.transportReturn;
+
+                  const p = payOf(raw, v.holiday, pSet, tPay, k);
+                  const day = Number(k.slice(-2));
+                  return (
+                    <button key={k} onClick={() => onSelect(k)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: "10px 14px", cursor: "pointer", textAlign: "left" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <div className="mono" style={{ width: 30, height: 30, borderRadius: 9, background: T.surface3, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, flexShrink: 0 }}>{day}</div>
+                        <div>
+                          <div style={{ fontSize: 13.5, fontWeight: 600 }}>{fmtHours(p.netHours)}{p.otHours > 0 ? ` · ${fmtHours(p.otHours)} mesai` : ""}{p.isSaturday ? " (Cmt)" : ""}</div>
+                          <div style={{ fontSize: 11, color: T.dim, marginTop: 1 }}>{projName} {tPay > 0 ? ` (+${tPay}₺ Yol)` : ""}</div>
+                        </div>
+                      </div>
+                      <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: T.accent }}>{fmtMoney(p.finalPay)}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {reportMode === "report" && (
+              <div style={{ padding: "18px 16px 0" }}>
+                <div style={{ fontSize: 11, letterSpacing: 1, color: T.dim2, fontWeight: 700, marginBottom: 8, paddingLeft: 2 }}>GÜNLÜK NOTLAR VE FOTOĞRAFLAR</div>
+                {monthEntries.filter(([, v]) => (v.note && v.note.trim()) || (v.photos && v.photos.length > 0)).length === 0 ? (
+                  <div style={{ color: T.dim, fontSize: 13.5, padding: "10px 4px 20px" }}>Bu ay için not veya fotoğraf eklenen gün bulunmuyor.</div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingBottom: 10 }}>
+                    {monthEntries
+                      .filter(([, v]) => (v.note && v.note.trim()) || (v.photos && v.photos.length > 0))
+                      .map(([k, v]) => {
+                        const [yy, mm, dd] = k.split("-").map(Number);
+                        const dObj = new Date(yy, mm - 1, dd);
+                        const niceDate = `${dd} ${MONTHS[mm - 1]} ${yy}, ${dObj.toLocaleDateString("tr-TR", { weekday: "long" })}`;
+                        return (
+                          <div key={k} style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 14, padding: "12px 14px" }}>
+                            <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 6 }}>{niceDate}</div>
+                            {v.note && v.note.trim() && (
+                              <div style={{ fontSize: 13, color: T.dim, whiteSpace: "pre-wrap", marginBottom: v.photos && v.photos.length > 0 ? 10 : 0 }}>{v.note}</div>
+                            )}
+                            {v.photos && v.photos.length > 0 && (
+                              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6 }}>
+                                {v.photos.map((p, idx) => (
+                                  <img key={idx} src={p} alt={`${niceDate} fotoğraf ${idx + 1}`} style={{ width: "100%", height: 120, objectFit: "cover", borderRadius: 10, border: `1px solid ${T.border}` }} />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    function ReceiptRow({ T, label, value, big, color }) {
+      return (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "5px 0" }}>
+          <span style={{ fontSize: big ? 13.5 : 13, color: big ? T.text : T.dim, fontWeight: big ? 700 : 400 }}>{label}</span>
+          <span className="mono" style={{ fontSize: big ? 20 : 14, fontWeight: 700, color: color || (big ? T.accent : T.text) }}>{value}</span>
+        </div>
+      );
+    }
+
+    /* ---------------- Settings tab ---------------- */
+    const SettingsTab = React.forwardRef(({ T, settings, onSaveSettings, setIsDirty, isDirty, themeMode, setThemeMode }, ref) => {
+      const [local, setLocal] = useState(settings);
+      const [newProj, setNewProj] = useState("");
+
+
+      useEffect(() => {
+        setLocal(settings);
+      }, [settings]);
+
+      const activeProjName = local.activeProject || local.projects?.[0] || "Genel Proje";
+      const pSettings = getProjectSettings(activeProjName, local);
+
+      const commit = (patch) => {
+        setLocal((prev) => ({ ...prev, ...patch }));
+        setIsDirty(true);
+      };
+
+      const commitProjectSetting = (patch) => {
+        setLocal((prev) => {
+          const currentP = getProjectSettings(activeProjName, prev);
+          const updatedP = { ...currentP, ...patch };
+          return {
+            ...prev,
+            projectSettings: {
+              ...(prev.projectSettings || {}),
+              [activeProjName]: updatedP
+            }
+          };
+        });
+        setIsDirty(true);
+      };
+
+      const handleSave = () => {
+        onSaveSettings(local);
+      };
+
+
+
+      React.useImperativeHandle(ref, () => ({
+        doSave: () => handleSave()
+      }));
+
+      const addProject = () => {
+        if (!newProj.trim()) return;
+        const name = newProj.trim();
+        const list = local.projects || [];
+        if (!list.includes(name)) {
+          const nextProjects = [...list, name];
+          const nextPSettings = {
+            ...(local.projectSettings || {}),
+            [name]: { ...DEFAULT_PROJECT_ITEM }
+          };
+          commit({ projects: nextProjects, projectSettings: nextPSettings, activeProject: name });
+        }
+        setNewProj("");
+      };
+
+      const removeProject = (pName) => {
+        if ((local.projects || []).length <= 1) return;
+        const list = (local.projects || []).filter((p) => p !== pName);
+        const nextActive = local.activeProject === pName ? list[0] : local.activeProject;
+        commit({ projects: list, activeProject: nextActive });
+      };
+
+      const switchActiveProject = (pName) => {
+        commit({ activeProject: pName });
+      };
+
+      const standardNet = Math.max(rangeHours(pSettings.standardStart, pSettings.standardEnd) - pSettings.dailyBreakHours, 0.01);
+      const hourlyRate = pSettings.dailyWage / standardNet;
+
+      return (
+        <div style={{ padding: "18px 16px 40px" }}>
+          <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Ayarlar</div>
+          <div style={{ fontSize: 13, color: T.dim, marginBottom: 20 }}>Tüm çalışma ve hesaplama parametrelerinizi özelleştirin.</div>
+
+          <div style={{ fontSize: 11, letterSpacing: 1, color: T.dim2, fontWeight: 700, textTransform: "uppercase", marginBottom: 10 }}>Görünüm</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 22 }}>
+            {[{ id: "dark", label: "Koyu", icon: "moon" }, { id: "light", label: "Açık", icon: "sun" }].map(({ id, label, icon }) => {
+              const active = themeMode === id;
+              return (
+                <button key={id} onClick={() => setThemeMode(id)}
+                  style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "11px 0", borderRadius: 12, cursor: "pointer",
+                    background: active ? T.accent : T.surface2, color: active ? T.accentText : T.text, border: `1px solid ${active ? T.accent : T.border}`, fontWeight: 600, fontSize: 13.5 }}>
+                  <Icon name="icon" size={15} color={active ? T.accentText : T.text} /> {label}
+                </button>
+              );
+            })}
+          </div>
+
+          <div style={{ fontSize: 11, letterSpacing: 1, color: T.dim2, fontWeight: 700, textTransform: "uppercase", marginBottom: 10 }}>Projeler Yönetimi</div>
+          <div style={{ marginBottom: 22 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <input type="text" placeholder="Yeni proje adı..." value={newProj} onChange={(e) => setNewProj(e.target.value)} style={{ flex: 1 }} />
+              <button onClick={addProject} style={{ background: T.accent, color: T.accentText, border: "none", borderRadius: 10, padding: "0 14px", fontWeight: 700, cursor: "pointer" }}>Ekle</button>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {(local.projects || []).map((p) => {
+                const isActive = p === activeProjName;
+                return (
+                  <div key={p} onClick={() => switchActiveProject(p)} style={{ background: isActive ? T.accent : T.surface2, color: isActive ? T.accentText : T.text, border: `1px solid ${isActive ? T.accent : T.border}`, borderRadius: 20, padding: "6px 14px", fontSize: 13, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontWeight: isActive ? 700 : 400 }}>
+                    <span>{p}</span>
+                    {(local.projects || []).length > 1 && (
+                      <button onClick={(e) => { e.stopPropagation(); removeProject(p); }} style={{ background: "none", border: "none", color: isActive ? T.accentText : T.danger, cursor: "pointer", display: "flex", padding: 2 }}>
+                        <Icon name="x" size={13} color={isActive ? T.accentText : T.danger} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ background: T.surface2, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16, marginBottom: 20 }}>
+            <div style={{ fontSize: 12, letterSpacing: 1, color: T.accent, fontWeight: 700, textTransform: "uppercase", marginBottom: 14 }}>
+              "{activeProjName}" Özel Ayarları
+            </div>
+
+            <Field T={T} label="Günlük yevmiye (₺)" hint="Bu projede net mesai için kazanılan tutar">
+              <input type="number" value={pSettings.dailyWage} onChange={(e) => commitProjectSetting({ dailyWage: Number(e.target.value) })} style={{ width: "100%" }} />
+            </Field>
+
+            <Field T={T} label="Standart mesai saatleri" hint="Varsayılan başlangıç ve bitiş">
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="time" value={pSettings.standardStart} onChange={(e) => commitProjectSetting({ standardStart: e.target.value })} style={{ flex: 1 }} />
+                <span style={{ color: T.dim2 }}>–</span>
+                <input type="time" value={pSettings.standardEnd} onChange={(e) => commitProjectSetting({ standardEnd: e.target.value })} style={{ flex: 1 }} />
+              </div>
+            </Field>
+
+            <Field T={T} label="Günlük mola saati" hint="Toplam çalışma süresinden düşülür">
+              <input type="number" step="0.25" min="0" value={pSettings.dailyBreakHours} onChange={(e) => commitProjectSetting({ dailyBreakHours: Number(e.target.value) })} style={{ width: "100%" }} />
+            </Field>
+
+            <Field T={T} label="Fazla mesai çarpanı" hint="Standart saati aşan mesaiye uygulanır (örn. 1.5)">
+              <input type="number" step="0.1" value={pSettings.otMultiplier} onChange={(e) => commitProjectSetting({ otMultiplier: Number(e.target.value) })} style={{ width: "100%" }} />
+            </Field>
+
+            <Field T={T} label="Cumartesi mesai çarpanı" hint="Cumartesi günü yapılan mesai saatlerine uygulanır (örn. 1.5)">
+              <input type="number" step="0.1" value={pSettings.saturdayMultiplier} onChange={(e) => commitProjectSetting({ saturdayMultiplier: Number(e.target.value) })} style={{ width: "100%" }} />
+            </Field>
+
+            <Field T={T} label="Resmi tatil / hafta tatili çarpanı" hint="Tatil günleri tüm mesaiye uygulanır (örn. 2)">
+              <input type="number" step="0.1" value={pSettings.holidayMultiplier} onChange={(e) => commitProjectSetting({ holidayMultiplier: Number(e.target.value) })} style={{ width: "100%" }} />
+            </Field>
+
+            <hr style={{ borderColor: T.border, margin: "16px 0", opacity: 0.5 }} />
+
+            <div style={{ fontSize: 11, letterSpacing: 1, color: T.dim2, fontWeight: 700, textTransform: "uppercase", marginBottom: 10 }}>Yol Ücreti Ayarları</div>
+
+            <Field T={T} label="Gidiş Yol Ücreti (₺)" hint="Günlük gidiş için varsayılan yol parası">
+              <input type="number" value={pSettings.transportGo} onChange={(e) => commitProjectSetting({ transportGo: Number(e.target.value) })} style={{ width: "100%" }} />
+            </Field>
+
+            <Field T={T} label="Geliş Yol Ücreti (₺)" hint="Günlük dönüş için varsayılan yol parası">
+              <input type="number" value={pSettings.transportReturn} onChange={(e) => commitProjectSetting({ transportReturn: Number(e.target.value) })} style={{ width: "100%" }} />
+            </Field>
+          </div>
+
+          <div style={{ marginTop: 14, background: T.surface, border: `1px solid ${T.border}`, borderTop: `2px solid ${T.accent}`, borderRadius: 16, padding: "14px 16px", boxShadow: T.shadow, marginBottom: 20 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <span style={{ fontSize: 13, color: T.dim }}>Standart net mesai</span>
+              <span className="mono" style={{ fontSize: 14, fontWeight: 700 }}>{fmtHours(standardNet)}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 13, color: T.dim }}>Hesaplanan saatlik ücret</span>
+              <span className="mono" style={{ fontSize: 16, fontWeight: 700, color: T.accent }}>{fmtMoney(hourlyRate)}/sa</span>
+            </div>
+          </div>
+
+          <button onClick={handleSave} style={{ width: "100%", background: isDirty ? T.accent : T.surface3, color: isDirty ? T.accentText : T.dim, border: "none", borderRadius: 14, padding: "14px 0", fontSize: 15, fontWeight: 700, cursor: isDirty ? "pointer" : "default", transition: "all .2s ease" }}>
+            {isDirty ? "Ayarları Kaydet" : "Ayarlar Güncel"}
+          </button>
+        </div>
+      );
+    });
+
+    function Field({ T, label, hint, children }) {
+      return (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 2 }}>{label}</div>
+          {hint && <div style={{ fontSize: 11.5, color: T.dim2, marginBottom: 7 }}>{hint}</div>}
+          {children}
+        </div>
+      );
+    }
+
+    /* ---------------- Bottom sheet shell ---------------- */
+    function SheetShell({ T, onClose, eyebrow, title, children }) {
+      return (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "flex-end", zIndex: 50 }} onClick={onClose}>
+          <div className="sheet" onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxHeight: "88%", overflowY: "auto", background: T.surface, borderTopLeftRadius: 22, borderTopRightRadius: 22, borderTop: `1px solid ${T.border}`, padding: "10px 18px 22px" }}>
+            <div style={{ width: 36, height: 4, borderRadius: 999, background: T.border, margin: "4px auto 14px" }} />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 12, color: T.dim2, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>{eyebrow}</div>
+                <div style={{ fontSize: 17, fontWeight: 700, marginTop: 2 }}>{title}</div>
+              </div>
+              <button onClick={onClose} style={{ background: T.surface2, border: "none", borderRadius: 999, width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+                <Icon name="x" size={16} color={T.dim} />
+              </button>
+            </div>
+            {children}
+          </div>
+        </div>
+      );
+    }
+
+    /* ---------------- Profile sheet ---------------- */
+    function ProfileSheet({ T, profile, onClose, onSave }) {
+      const [firstName, setFirstName] = useState(profile.firstName || "");
+      const [lastName, setLastName] = useState(profile.lastName || "");
+      return (
+        <SheetShell T={T} onClose={onClose} eyebrow="Profil" title="Kişisel bilgiler">
+          <div style={{ marginTop: 14 }}>
+            <Field T={T} label="Ad" hint="Ana sayfada bu isimle karşılanırsınız">
+              <input type="text" value={firstName} onChange={(e) => setFirstName(e.target.value)} placeholder="Adınız" style={{ width: "100%" }} />
+            </Field>
+            <Field T={T} label="Soyad" hint="">
+              <input type="text" value={lastName} onChange={(e) => setLastName(e.target.value)} placeholder="Soyadınız" style={{ width: "100%" }} />
+            </Field>
+          </div>
+          <button onClick={() => onSave({ firstName, lastName })} style={{ width: "100%", background: T.accent, color: T.accentText, border: "none", borderRadius: 14, padding: "14px 0", fontSize: 15, fontWeight: 700, cursor: "pointer", marginTop: 6 }}>
+            Kaydet
+          </button>
+        </SheetShell>
+      );
+    }
+
+    /* ---------------- Custom Toggle ---------------- */
+    function Toggle({ T, checked, onChange }) {
+      return (
+        <button onClick={onChange} style={{ width: 46, height: 27, borderRadius: 999, position: "relative", cursor: "pointer", border: "none", background: checked ? T.accent : T.surface3, flexShrink: 0 }}>
+          <span style={{ position: "absolute", top: 2, left: checked ? 21 : 2, width: 23, height: 23, borderRadius: 999, background: "#fff", transition: "left .15s ease", boxShadow: "0 1px 2px rgba(0,0,0,0.3)" }} />
+        </button>
+      );
+    }
+
+    function Row({ T, label, children }) {
+      return (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderBottom: `1px solid ${T.border}` }}>
+          <span style={{ fontSize: 14, fontWeight: 600 }}>{label}</span>
+          {children}
+        </div>
+      );
+    }
+
+    /* ---------------- Day sheet ---------------- */
+    function DaySheet({ T, dateKey, entry, settings, onClose, onSave }) {
+      const [worked, setWorked] = useState(entry?.worked ?? false);
+      const [project, setProject] = useState(entry?.project || settings.activeProject || settings.projects?.[0] || "Genel Proje");
+
+      const pSet = getProjectSettings(project, settings);
+
+      const defaultStart = pSet.standardStart || "08:00";
+      const defaultEnd = pSet.standardEnd || "17:00";
+
+      const [ranges, setRanges] = useState(entry?.ranges?.length ? entry.ranges : [{ start: defaultStart, end: defaultEnd }]);
+      const [holiday, setHoliday] = useState(entry?.holiday ?? false);
+
+      const [includeTransportGo, setIncludeTransportGo] = useState(entry?.includeTransportGo ?? true);
+      const [transportGoVal, setTransportGoVal] = useState(entry?.transportGoVal ?? pSet.transportGo);
+
+      const [includeTransportReturn, setIncludeTransportReturn] = useState(entry?.includeTransportReturn ?? true);
+      const [transportReturnVal, setTransportReturnVal] = useState(entry?.transportReturnVal ?? pSet.transportReturn);
+
+      const [note, setNote] = useState(entry?.note || "");
+      const [photos, setPhotos] = useState(entry?.photos || []);
+      const dayPhotoInputRef = useRef(null);
+
+      const readFileAsDataURL = (file) => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      const handleDayPhotoUpload = async (e) => {
+        const files = Array.from(e.target.files || []);
+        if (files.length === 0) return;
+        const tooBig = files.find((f) => f.size > 5 * 1024 * 1024);
+        if (tooBig) {
+          alert("Lütfen her biri 5MB'dan küçük fotoğraflar seçiniz.");
+          return;
+        }
+        try {
+          const dataUrls = await Promise.all(files.map(readFileAsDataURL));
+          setPhotos((prev) => [...prev, ...dataUrls]);
+        } finally {
+          if (dayPhotoInputRef.current) dayPhotoInputRef.current.value = "";
+        }
+      };
+
+      const removeDayPhoto = (idx) => setPhotos((prev) => prev.filter((_, i) => i !== idx));
+
+      const [y, m, d] = dateKey.split("-").map(Number);
+      const dateObj = new Date(y, m - 1, d);
+      const niceDate = `${d} ${MONTHS[m - 1]} ${y}, ${dateObj.toLocaleDateString("tr-TR", { weekday: "long" })}`;
+
+      let currentTransportPay = 0;
+      if (includeTransportGo) currentTransportPay += Number(transportGoVal || 0);
+      if (includeTransportReturn) currentTransportPay += Number(transportReturnVal || 0);
+
+      const rawHours = totalHoursOf(worked ? ranges : []);
+      const p = payOf(rawHours, holiday, pSet, currentTransportPay, dateKey);
+
+      const toggleWorked = () => {
+        const next = !worked;
+        setWorked(next);
+        if (next && ranges.length === 0) setRanges([{ start: defaultStart, end: defaultEnd }]);
+      };
+
+      const handleProjectChange = (pName) => {
+        setProject(pName);
+        const newPSet = getProjectSettings(pName, settings);
+        setRanges([{ start: newPSet.standardStart, end: newPSet.standardEnd }]);
+        setTransportGoVal(newPSet.transportGo);
+        setTransportReturnVal(newPSet.transportReturn);
+      };
+
+      const updateRange = (i, field, val) => setRanges((rs) => rs.map((r, idx) => (idx === i ? { ...r, [field]: val } : r)));
+      const removeRange = (i) => setRanges((rs) => rs.filter((_, idx) => idx !== i));
+      const addRange = () => setRanges((rs) => [...rs, { start: pSet.standardEnd, end: "20:00" }]);
+      
+      const save = () => onSave({
+        worked, ranges, holiday, project,
+        includeTransportGo, transportGoVal: Number(transportGoVal),
+        includeTransportReturn, transportReturnVal: Number(transportReturnVal),
+        note, photos
+      });
+
+      return (
+        <SheetShell T={T} onClose={onClose} eyebrow="Gün detayı" title={niceDate}>
+          <Row T={T} label="Bugün çalıştım"><Toggle T={T} checked={worked} onChange={toggleWorked} /></Row>
+
+          {worked && (
+            <>
+              <Row T={T} label="Resmi tatil / hafta tatili"><Toggle T={T} checked={holiday} onChange={() => setHoliday((h) => !h)} /></Row>
+              
+              <div style={{ padding: "10px 0", borderBottom: `1px solid ${T.border}` }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>Proje Seçimi</div>
+                <select value={project} onChange={(e) => handleProjectChange(e.target.value)} style={{ width: "100%" }}>
+                  {(settings.projects || ["Genel Proje"]).map((pName) => (
+                    <option key={pName} value={pName}>{pName}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontSize: 12, color: T.dim2, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Çalışma Saatleri</div>
+                {ranges.map((r, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                    <input type="time" value={r.start} onChange={(e) => updateRange(i, "start", e.target.value)} style={{ flex: 1 }} />
+                    <span style={{ color: T.dim2 }}>–</span>
+                    <input type="time" value={r.end} onChange={(e) => updateRange(i, "end", e.target.value)} style={{ flex: 1 }} />
+                    {ranges.length > 1 && (
+                      <button onClick={() => removeRange(i)} style={{ background: T.surface2, border: `1px solid ${T.border}`, borderRadius: 10, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+                        <Icon name="trash-2" size={15} color={T.danger} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+                <button onClick={addRange} style={{ background: T.surface2, color: T.text, border: `1px solid ${T.border}`, borderRadius: 10, padding: "8px 12px", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginTop: 4 }}>
+                  <Icon name="plus" size={14} /> Aralık Ekle
+                </button>
+              </div>
+
+              <div style={{ marginTop: 16, borderTop: `1px solid ${T.border}`, paddingTop: 12 }}>
+                <div style={{ fontSize: 12, color: T.dim2, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10 }}>Yol Ücreti</div>
+                
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Toggle T={T} checked={includeTransportGo} onChange={() => setIncludeTransportGo(!includeTransportGo)} />
+                    <span style={{ fontSize: 13.5, fontWeight: 600 }}>Gidiş Yol Ücreti</span>
+                  </div>
+                  {includeTransportGo && (
+                    <input type="number" value={transportGoVal} onChange={(e) => setTransportGoVal(e.target.value)} style={{ width: 80, padding: "6px 8px", textAlign: "right" }} />
+                  )}
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Toggle T={T} checked={includeTransportReturn} onChange={() => setIncludeTransportReturn(!includeTransportReturn)} />
+                    <span style={{ fontSize: 13.5, fontWeight: 600 }}>Geliş Yol Ücreti</span>
+                  </div>
+                  {includeTransportReturn && (
+                    <input type="number" value={transportReturnVal} onChange={(e) => setTransportReturnVal(e.target.value)} style={{ width: 80, padding: "6px 8px", textAlign: "right" }} />
+                  )}
+                </div>
+              </div>
+
+              <div style={{ marginTop: 16, borderTop: `1px solid ${T.border}`, paddingTop: 12 }}>
+                <div style={{ fontSize: 12, color: T.dim2, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10 }}>Günlük Not &amp; Fotoğraflar</div>
+
+                <textarea
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  placeholder="Bugün ne yaptın? Kısa notlar al..."
+                  rows={4}
+                  style={{
+                    width: "100%", resize: "vertical", background: T.surface3, color: T.text,
+                    border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 11px",
+                    fontSize: 14, fontFamily: "inherit", outline: "none", marginBottom: 10
+                  }}
+                />
+
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  ref={dayPhotoInputRef}
+                  onChange={handleDayPhotoUpload}
+                  style={{ display: "none" }}
+                />
+
+                {photos.length > 0 && (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginBottom: 10 }}>
+                    {photos.map((p, idx) => (
+                      <div key={idx} style={{ position: "relative", borderRadius: 10, overflow: "hidden", border: `1px solid ${T.border}`, background: T.surface3 }}>
+                        <img src={p} alt={`Gün fotoğrafı ${idx + 1}`} style={{ width: "100%", height: 76, objectFit: "cover", display: "block" }} />
+                        <button
+                          onClick={() => removeDayPhoto(idx)}
+                          style={{ position: "absolute", top: 3, right: 3, background: "rgba(0,0,0,0.55)", border: "none", borderRadius: 999, width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+                          <Icon name="x" size={11} color="#fff" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <button
+                  onClick={() => dayPhotoInputRef.current && dayPhotoInputRef.current.click()}
+                  style={{ background: T.surface2, color: T.text, border: `1px solid ${T.border}`, borderRadius: 10, padding: "8px 12px", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                  <Icon name="camera" size={14} /> Fotoğraf Ekle
+                </button>
+              </div>
+
+              <div style={{ marginTop: 16, background: T.surface2, borderRadius: 12, padding: 12, border: `1px solid ${T.border}` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: T.dim, marginBottom: 4 }}>
+                  <span>Net Saat ({pSet.dailyBreakHours}s Mola):</span>
+                  <span className="mono" style={{ color: T.text, fontWeight: 600 }}>{fmtHours(p.netHours)}</span>
+                </div>
+                {p.isSaturday && !holiday && (
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: T.ot, marginBottom: 4 }}>
+                    <span>Cumartesi Çarpanı ({pSet.saturdayMultiplier}x):</span>
+                    <span className="mono" style={{ fontWeight: 600 }}>Uygulandı</span>
+                  </div>
+                )}
+                {!p.isSaturday && p.otHours > 0 && (
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: T.ot, marginBottom: 4 }}>
+                    <span>Fazla Mesai ({pSet.otMultiplier}x):</span>
+                    <span className="mono" style={{ fontWeight: 600 }}>{fmtHours(p.otHours)}</span>
+                  </div>
+                )}
+                {currentTransportPay > 0 && (
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: T.normal, marginBottom: 4 }}>
+                    <span>Toplam Yol Ücreti:</span>
+                    <span className="mono" style={{ fontWeight: 600 }}>+{fmtMoney(currentTransportPay)}</span>
+                  </div>
+                )}
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, fontWeight: 700, marginTop: 6, paddingTop: 6, borderTop: `1px solid ${T.border}` }}>
+                  <span>Günlük Kazanç:</span>
+                  <span className="mono" style={{ color: T.accent }}>{fmtMoney(p.finalPay)}</span>
+                </div>
+              </div>
+            </>
+          )}
+
+          <button onClick={save} style={{ width: "100%", background: T.accent, color: T.accentText, border: "none", borderRadius: 14, padding: "14px 0", fontSize: 15, fontWeight: 700, cursor: "pointer", marginTop: 16 }}>
+            Kaydet
+          </button>
+        </SheetShell>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
