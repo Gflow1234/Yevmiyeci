@@ -33,13 +33,13 @@
     // Firebase yapılandırması: Firebase Console > Project settings > Your apps > Web app
     // Buradaki değerleri kendi Firebase projenizin web uygulaması bilgileriyle doldurun.
     const FIREBASE_CONFIG = {
-      apiKey: "BURAYA_API_KEY",
-      authDomain: "BURAYA_AUTH_DOMAIN",
-      projectId: "BURAYA_PROJECT_ID",
-      storageBucket: "BURAYA_STORAGE_BUCKET",
-      messagingSenderId: "BURAYA_MESSAGING_SENDER_ID",
-      appId: "BURAYA_APP_ID"
-    };
+  apiKey: "AIzaSyB4dpGErV_eBcdoUc7UMWqmF9ZTEq1qkGw",
+  authDomain: "yevmiyecigunlugu.firebaseapp.com",
+  projectId: "yevmiyecigunlugu",
+  storageBucket: "yevmiyecigunlugu.firebasestorage.app",
+  messagingSenderId: "785020312616",
+  appId: "1:785020312616:web:27923056f4970df1c4291d"
+};
 
     const FIREBASE_READY = Object.values(FIREBASE_CONFIG).every(v => v && !String(v).startsWith("BURAYA_"));
     let firebaseApp = null, firebaseAuth = null, firebaseDb = null, firebaseStorage = null;
