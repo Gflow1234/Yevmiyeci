@@ -182,6 +182,60 @@
     /* ---------------- Cloud Storage ---------------- */
     const userRoot = (uid) => firebaseDb.collection("users").doc(uid);
 
+    // Admin kontrolü Firestore'daki admins/{uid} belgesine göre yapılır.
+    // Admin belgesini yalnızca Firebase Console üzerinden oluşturun.
+    async function isAdminUser(user) {
+      if (!user || !firebaseDb) return false;
+      try {
+        const snap = await firebaseDb.collection("admins").doc(user.uid).get();
+        return snap.exists && snap.data()?.admin === true;
+      } catch (e) {
+        console.error("Admin kontrolü başarısız:", e);
+        return false;
+      }
+    }
+
+    async function ensureUserRecord(user) {
+      if (!user || !firebaseDb) return;
+      const ref = userRoot(user.uid);
+      const snap = await ref.get();
+      const data = {
+        email: user.email || "",
+        displayName: user.displayName || "",
+        photoURL: user.photoURL || "",
+        lastLoginAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+      if (!snap.exists) data.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+      await ref.set(data, { merge: true });
+    }
+
+    async function loadAllUsersForAdmin() {
+      if (!firebaseDb) return [];
+      const snap = await firebaseDb.collection("users").get();
+      return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    }
+
+    async function loadUserDataForAdmin(uid) {
+      const root = userRoot(uid);
+      const [metaSnap, entriesSnap, photosSnap] = await Promise.all([
+        root.collection("meta").doc("app").get(),
+        root.collection("entries").get(),
+        root.collection("monthPhotos").get()
+      ]);
+      const meta = metaSnap.exists ? metaSnap.data() : {};
+      const entries = {};
+      entriesSnap.forEach(doc => { entries[doc.id] = doc.data(); });
+      const monthPhotos = {};
+      photosSnap.forEach(doc => { monthPhotos[doc.id] = Array.isArray(doc.data().photos) ? doc.data().photos : []; });
+      return {
+        meta,
+        entries,
+        monthPhotos,
+        profile: { ...DEFAULT_PROFILE, ...(meta.profile || {}) },
+        settings: { ...DEFAULT_SETTINGS, ...(meta.settings || {}), projectSettings: { ...DEFAULT_SETTINGS.projectSettings, ...((meta.settings || {}).projectSettings || {}) } }
+      };
+    }
+
     async function loadCloudData(user) {
       if (!firebaseDb || !user) return { settings: DEFAULT_SETTINGS, entries: {}, monthPhotos: {}, profile: DEFAULT_PROFILE, theme: "dark" };
       const root = userRoot(user.uid);
@@ -244,6 +298,7 @@
       const [themeMode, setThemeMode] = useState("dark");
       const [selectedKey, setSelectedKey] = useState(null);
       const [profileOpen, setProfileOpen] = useState(false);
+      const [isAdmin, setIsAdmin] = useState(false);
 
       const [isDirty, setIsDirty] = useState(false);
       const [pendingTab, setPendingTab] = useState(null);
@@ -259,9 +314,12 @@
           setIsAuthenticated(!!nextUser);
           if (!nextUser) {
             setEntries({}); setMonthPhotos({}); setSettings(DEFAULT_SETTINGS); setProfile(DEFAULT_PROFILE);
-            setThemeMode("dark"); setLoading(false); return;
+            setThemeMode("dark"); setIsAdmin(false); setLoading(false); return;
           }
           try {
+            await ensureUserRecord(nextUser);
+            const adminStatus = await isAdminUser(nextUser);
+            setIsAdmin(adminStatus);
             const d = await loadCloudData(nextUser);
             setSettings(d.settings); setEntries(d.entries); setMonthPhotos(d.monthPhotos || {});
             setProfile(d.profile); setThemeMode(d.theme);
@@ -451,6 +509,9 @@
                 onRemovePhoto={(idx) => handleRemoveMonthPhoto(currentMonthKey, idx)}
               />
             )}
+            {tab === "admin" && isAdmin && (
+              <AdminTab T={T} currentUser={user} />
+            )}
             {tab === "settings" && (
               <SettingsTab
                 ref={settingsRef}
@@ -465,7 +526,7 @@
             )}
           </div>
 
-          <TabBar T={T} tab={tab} setTab={handleTabChange} />
+          <TabBar T={T} tab={tab} setTab={handleTabChange} isAdmin={isAdmin} />
 
           {showGuardModal && (
             <GuardModal
@@ -551,6 +612,156 @@
       );
     }
 
+    /* ---------------- Admin Panel ---------------- */
+    function AdminTab({ T, currentUser }) {
+      const [users, setUsers] = useState([]);
+      const [selectedUid, setSelectedUid] = useState(null);
+      const [selectedData, setSelectedData] = useState(null);
+      const [loadingUsers, setLoadingUsers] = useState(true);
+      const [loadingUser, setLoadingUser] = useState(false);
+      const [search, setSearch] = useState("");
+      const [error, setError] = useState("");
+
+      const refreshUsers = async () => {
+        setLoadingUsers(true);
+        setError("");
+        try {
+          const list = await loadAllUsersForAdmin();
+          list.sort((a, b) => String(a.displayName || a.email || "").localeCompare(String(b.displayName || b.email || ""), "tr"));
+          setUsers(list);
+        } catch (err) {
+          console.error(err);
+          setError("Kullanıcılar yüklenemedi. Firestore admin kurallarını kontrol edin.");
+        } finally {
+          setLoadingUsers(false);
+        }
+      };
+
+      useEffect(() => { refreshUsers(); }, []);
+
+      const openUser = async (uid) => {
+        setSelectedUid(uid);
+        setLoadingUser(true);
+        setError("");
+        try {
+          setSelectedData(await loadUserDataForAdmin(uid));
+        } catch (err) {
+          console.error(err);
+          setError("Kullanıcı verileri yüklenemedi.");
+          setSelectedData(null);
+        } finally {
+          setLoadingUser(false);
+        }
+      };
+
+      const filtered = users.filter(u => {
+        const q = search.trim().toLowerCase();
+        if (!q) return true;
+        return String(u.email || "").toLowerCase().includes(q) || String(u.displayName || "").toLowerCase().includes(q);
+      });
+
+      const entries = selectedData?.entries || {};
+      const workedEntries = Object.entries(entries).filter(([, v]) => v?.worked).sort(([a], [b]) => b.localeCompare(a));
+      const totalPay = workedEntries.reduce((sum, [k, v]) => {
+        const proj = v.project || selectedData?.settings?.activeProject || "Genel Proje";
+        const ps = getProjectSettings(proj, selectedData?.settings || DEFAULT_SETTINGS);
+        const raw = totalHoursOf(v.ranges);
+        let transport = 0;
+        if (v.includeTransportGo) transport += Number(v.transportGoVal ?? ps.transportGo ?? 0);
+        if (v.includeTransportReturn) transport += Number(v.transportReturnVal ?? ps.transportReturn ?? 0);
+        return sum + payOf(raw, v.holiday, ps, transport, k).finalPay;
+      }, 0);
+
+      return (
+        <div style={{ padding: "18px 16px 24px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+            <div>
+              <div style={{ fontSize: 11, letterSpacing: 1.2, color: T.dim2, fontWeight: 700, textTransform: "uppercase" }}>Yönetim</div>
+              <div style={{ fontSize: 22, fontWeight: 700, marginTop: 3 }}>Kullanıcılar</div>
+            </div>
+            <button onClick={refreshUsers} style={{ ...navBtnStyle(T), width: 40, height: 40 }} title="Yenile">
+              <Icon name="refresh-cw" size={17} color={T.text} />
+            </button>
+          </div>
+
+          <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 14, padding: 12, marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Icon name="search" size={16} color={T.dim} />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Ad veya e-posta ara..." style={{ flex: 1, border: "none", background: "transparent", padding: "6px 0", outline: "none" }} />
+            </div>
+          </div>
+
+          {error && <div style={{ background: T.surface2, border: `1px solid ${T.danger}`, color: T.danger, borderRadius: 12, padding: 12, fontSize: 12, marginBottom: 12 }}>{error}</div>}
+
+          <div style={{ color: T.dim, fontSize: 12, marginBottom: 8 }}>{users.length} kullanıcı kayıtlı</div>
+
+          {loadingUsers ? (
+            <div style={{ color: T.dim, padding: 24, textAlign: "center" }}>Kullanıcılar yükleniyor…</div>
+          ) : filtered.length === 0 ? (
+            <div style={{ color: T.dim, padding: 24, textAlign: "center" }}>Kullanıcı bulunamadı.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              {filtered.map(u => {
+                const name = u.displayName || "İsimsiz kullanıcı";
+                return (
+                  <button key={u.id} onClick={() => openUser(u.id)} style={{ width: "100%", textAlign: "left", background: T.surface, color: T.text, border: `1px solid ${selectedUid === u.id ? T.accent : T.border}`, borderRadius: 14, padding: "12px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 11 }}>
+                    {u.photoURL ? <img src={u.photoURL} alt="" style={{ width: 38, height: 38, borderRadius: "50%", objectFit: "cover" }} /> : <div style={{ width: 38, height: 38, borderRadius: "50%", background: T.surface3, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}>{initialsOf(name, "")}</div>}
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontWeight: 700, fontSize: 14 }}>{name}</div>
+                      <div style={{ color: T.dim, fontSize: 11.5, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.email || "E-posta yok"}</div>
+                    </div>
+                    <Icon name="chevron-right" size={17} color={T.dim2} />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {selectedUid && (
+            <div style={{ marginTop: 16, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 18, padding: 16 }}>
+              {loadingUser ? <div style={{ color: T.dim, textAlign: "center", padding: 20 }}>Kullanıcı verileri yükleniyor…</div> : selectedData && (
+                <>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 14 }}>
+                    <div>
+                      <div style={{ fontSize: 11, color: T.dim2, textTransform: "uppercase", letterSpacing: 1 }}>Kullanıcı detayı</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, marginTop: 3 }}>{selectedData.profile.firstName || selectedData.profile.lastName ? `${selectedData.profile.firstName} ${selectedData.profile.lastName}`.trim() : (users.find(u => u.id === selectedUid)?.displayName || "İsimsiz kullanıcı")}</div>
+                      <div style={{ color: T.dim, fontSize: 12, marginTop: 2 }}>{users.find(u => u.id === selectedUid)?.email || ""}</div>
+                    </div>
+                    <button onClick={() => { setSelectedUid(null); setSelectedData(null); }} style={{ ...navBtnStyle(T), width: 34, height: 34 }}><Icon name="x" size={16} color={T.text} /></button>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 7, marginBottom: 14 }}>
+                    <div style={{ background: T.surface2, borderRadius: 11, padding: 10 }}><div style={{ fontSize: 10.5, color: T.dim }}>Çalışılan gün</div><div className="mono" style={{ fontWeight: 700, marginTop: 4 }}>{workedEntries.length}</div></div>
+                    <div style={{ background: T.surface2, borderRadius: 11, padding: 10 }}><div style={{ fontSize: 10.5, color: T.dim }}>Toplam kazanç</div><div className="mono" style={{ fontWeight: 700, marginTop: 4, color: T.accent }}>{fmtMoney(totalPay)}</div></div>
+                    <div style={{ background: T.surface2, borderRadius: 11, padding: 10 }}><div style={{ fontSize: 10.5, color: T.dim }}>Aylık fotoğraf</div><div className="mono" style={{ fontWeight: 700, marginTop: 4 }}>{Object.values(selectedData.monthPhotos).reduce((n, a) => n + a.length, 0)}</div></div>
+                  </div>
+
+                  <div style={{ fontSize: 11, color: T.dim2, fontWeight: 700, letterSpacing: 1, marginBottom: 7 }}>YEVMİYE KAYITLARI</div>
+                  {workedEntries.length === 0 ? <div style={{ color: T.dim, fontSize: 13, padding: "12px 0" }}>Henüz çalışma kaydı yok.</div> : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 360, overflowY: "auto" }}>
+                      {workedEntries.map(([k, v]) => {
+                        const proj = v.project || selectedData.settings.activeProject || "Genel Proje";
+                        const ps = getProjectSettings(proj, selectedData.settings);
+                        let transport = 0;
+                        if (v.includeTransportGo) transport += Number(v.transportGoVal ?? ps.transportGo ?? 0);
+                        if (v.includeTransportReturn) transport += Number(v.transportReturnVal ?? ps.transportReturn ?? 0);
+                        const calc = payOf(totalHoursOf(v.ranges), v.holiday, ps, transport, k);
+                        return <div key={k} style={{ background: T.surface2, borderRadius: 11, padding: "9px 11px", display: "flex", justifyContent: "space-between", gap: 10 }}><div><div style={{ fontSize: 13, fontWeight: 700 }}>{k}</div><div style={{ color: T.dim, fontSize: 11.5 }}>{proj} · {fmtHours(calc.netHours)}{v.note ? " · Not var" : ""}</div></div><div className="mono" style={{ color: T.accent, fontWeight: 700, fontSize: 13 }}>{fmtMoney(calc.finalPay)}</div></div>;
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          <div style={{ marginTop: 14, color: T.dim2, fontSize: 10.5, lineHeight: 1.5 }}>
+            Yönetici hesabı: {currentUser?.email || ""}
+          </div>
+        </div>
+      );
+    }
+
     /* ---------------- Guard Modal ---------------- */
     function GuardModal({ T, onSave, onDiscard, onCancel }) {
       return (
@@ -575,12 +786,13 @@
     }
 
     /* ---------------- Tab bar ---------------- */
-    function TabBar({ T, tab, setTab }) {
+    function TabBar({ T, tab, setTab, isAdmin }) {
       const items = [
         { id: "home", label: "Ana Sayfa", icon: "home" },
         { id: "calendar", label: "Takvim", icon: "calendar" },
         { id: "summary", label: "Özet", icon: "bar-chart-3" },
         { id: "settings", label: "Ayarlar", icon: "settings" },
+        ...(isAdmin ? [{ id: "admin", label: "Yönetim", icon: "shield-check" }] : []),
       ];
       return (
         <div className="no-print" style={{ borderTop: `1px solid ${T.border}`, background: T.surface, display: "flex", paddingBottom: "env(safe-area-inset-bottom, 8px)" }}>
