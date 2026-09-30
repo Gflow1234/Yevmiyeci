@@ -49,7 +49,19 @@
       firebaseDb = firebase.firestore();
       firebaseStorage = firebase.storage();
     }
+// --- Admin kontrolü ---
+const checkAdmin = async (uid) => {
+  if (!firebaseDb || !uid) return false;
 
+  try {
+    const adminDoc = await firebaseDb.collection("Admins").doc(uid).get();
+
+    return adminDoc.exists && adminDoc.data().admin === true;
+  } catch (error) {
+    console.error("Admin kontrolü başarısız:", error);
+    return false;
+  }
+};
     // --- Lucide Icon Entegrasyonu ---
     const Icon = ({ name, size = 20, color = "currentColor", strokeWidth = 2, style = {} }) => {
       const ref = useRef(null);
