@@ -2,7 +2,13 @@
 <html lang="tr">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#0b0d10">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Yevmiye Defteri">
+  <link rel="manifest" href="./manifest.json">
   <title>Yevmiye Defteri</title>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -14,7 +20,8 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-storage-compat.js"></script>
   <style>
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-    body { margin: 0; padding: 0; }
+    html, body, #root { width: 100%; min-height: 100%; }
+    body { margin: 0; padding: 0; overflow: hidden; overscroll-behavior: none; }
     
     @media print {
       body * { visibility: hidden; }
@@ -449,7 +456,7 @@
 
       if (loading) {
         return (
-          <div style={{ background: DARK.bg, color: DARK.dim, height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui" }}>
+          <div style={{ background: DARK.bg, color: DARK.dim, height: "100dvh", minHeight: "100svh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui" }}>
             Yükleniyor…
           </div>
         );
@@ -460,10 +467,11 @@
       }
 
       return (
-        <div style={{ background: T.bg, color: T.text, height: "100vh", display: "flex", flexDirection: "column", fontFamily: "-apple-system, system-ui, sans-serif", transition: "background .2s ease, color .2s ease" }}>
+        <div style={{ background: T.bg, color: T.text, height: "100dvh", minHeight: "100svh", display: "flex", flexDirection: "column", fontFamily: "-apple-system, system-ui, sans-serif", transition: "background .2s ease, color .2s ease" }}>
           <style>{`
             * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
             .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+            .scrollarea { min-height: 0; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
             .scrollarea::-webkit-scrollbar { display: none; }
             input[type="time"], input[type="number"], input[type="text"], input[type="password"], select {
               background: ${T.surface3}; color: ${T.text}; border: 1px solid ${T.border};
@@ -527,6 +535,13 @@
           </div>
 
           <TabBar T={T} tab={tab} setTab={handleTabChange} isAdmin={isAdmin} />
+
+          <style>{`
+            .bottom-nav { padding-left: max(0px, env(safe-area-inset-left)); padding-right: max(0px, env(safe-area-inset-right)); }
+            @media (display-mode: standalone) {
+              .bottom-nav { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+            }
+          `}</style>
 
           {showGuardModal && (
             <GuardModal
@@ -795,12 +810,12 @@
         ...(isAdmin ? [{ id: "admin", label: "Yönetim", icon: "shield-check" }] : []),
       ];
       return (
-        <div className="no-print" style={{ borderTop: `1px solid ${T.border}`, background: T.surface, display: "flex", paddingBottom: "env(safe-area-inset-bottom, 8px)" }}>
+        <div className="no-print bottom-nav" style={{ borderTop: `1px solid ${T.border}`, background: T.surface, display: "flex", flexShrink: 0, paddingBottom: "max(8px, env(safe-area-inset-bottom))" }}>
           {items.map(({ id, label, icon }) => {
             const active = tab === id;
             return (
               <button key={id} onClick={() => setTab(id)} className="tabbtn"
-                style={{ flex: 1, background: "none", border: "none", padding: "10px 0 6px", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, color: active ? T.accent : T.dim, cursor: "pointer" }}>
+                style={{ flex: 1, minWidth: 0, background: "none", border: "none", padding: "10px 0 8px", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, color: active ? T.accent : T.dim, cursor: "pointer" }}>
                 <Icon name={icon} size={21} strokeWidth={active ? 2.3 : 1.7} color={active ? T.accent : T.dim} />
                 <span style={{ fontSize: 10.5, fontWeight: active ? 600 : 400 }}>{label}</span>
               </button>
@@ -1647,6 +1662,12 @@
     }
 
     ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js").catch((err) => console.warn("PWA Service Worker kaydı başarısız:", err));
+      });
+    }
   </script>
 </body>
 </html>
